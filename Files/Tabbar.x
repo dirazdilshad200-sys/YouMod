@@ -100,7 +100,9 @@ static NSString *ymTitleForTabID(NSString *tabID) {
 
 %hook YTPivotBarView
 - (void)setRenderer:(YTIPivotBarRenderer *)renderer {
-    NSArray *savedOrder = [[NSUserDefaults standardUserDefaults] arrayForKey:TabOrder];
+    // TabOrder is an array stored in NSUserDefaults; read from the prefs
+    // snapshot to avoid an IPC round-trip on every pivot bar render.
+    NSArray *savedOrder = (NSArray *)YMPrefsSnapshot()[TabOrder];
     if (savedOrder.count > 0) {
         NSMutableArray <YTIPivotBarSupportedRenderers *> *items = [renderer itemsArray];
 
@@ -287,7 +289,7 @@ static BOOL isTabSelected = NO;
     if (!isTabSelected) {
         // Build pivot identifiers from enabled tabs (skip Create — matches Settings.x segment logic)
         NSMutableArray *pivotIdentifiers = [NSMutableArray array];
-        NSArray *savedOrder = [[NSUserDefaults standardUserDefaults] arrayForKey:TabOrder];
+        NSArray *savedOrder = (NSArray *)YMPrefsSnapshot()[TabOrder];
         if (savedOrder.count > 0) {
             for (NSDictionary *entry in savedOrder) {
                 if (![entry[@"enabled"] boolValue]) continue;
