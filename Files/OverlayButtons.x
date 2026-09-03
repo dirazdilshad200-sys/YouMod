@@ -513,6 +513,7 @@ static void YouModShowShareNotification(NSString *message, BOOL success) {
     YTAutoplayAutonavController *autoplayController = [playerOverlay valueForKey:@"_autonavController"];
     BOOL isLoopEnabled = !IS_ENABLED(KeepLoopKey);
     [[NSUserDefaults standardUserDefaults] setBool:isLoopEnabled forKey:KeepLoopKey];
+    YMReloadPrefsCache();
     [autoplayController setLoopMode:isLoopEnabled ? 2 : 0];
     YouModShowShareNotification(LOC(isLoopEnabled ? @"LOOP_ENABLED" : @"LOOP_DISABLED"), YES);
 }
@@ -589,6 +590,7 @@ static NSString *getCompactQualityLabel(MLFormat *format) {
         YTSingleVideoController *sgvid = player.activeVideo;
         BOOL muteStatus = ![sgvid isMuted];
         [[NSUserDefaults standardUserDefaults] setBool:muteStatus forKey:KeepMutedKey];
+        YMReloadPrefsCache();
         [sgvid setMuted:muteStatus];
         UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:20 weight:UIImageSymbolWeightMedium];
         UIImage *newIcon = [UIImage systemImageNamed:muteStatus ? @"speaker.slash" : @"speaker.wave.2" withConfiguration:config];
