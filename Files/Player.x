@@ -144,11 +144,23 @@ static void YouModAddEndTime(YTPlayerViewController *self, YTSingleVideoControll
     }
     
     if (IS_ENABLED(ShowExtraTimeRemaining)) {
+        // NSDateFormatter is expensive to allocate — cache one per format.
+        // The format only changes when the user toggles 24h mode, which
+        // invalidates the prefs cache and we recreate on next call.
+        static NSDateFormatter *fmt12 = nil;
+        static NSDateFormatter *fmt24 = nil;
+        static dispatch_once_t fmtOnce;
+        dispatch_once(&fmtOnce, ^{
+            NSLocale *posix = [[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"];
+            fmt12 = [[NSDateFormatter alloc] init];
+            [fmt12 setLocale:posix];
+            [fmt12 setDateFormat:@"h:mm a"];
+            fmt24 = [[NSDateFormatter alloc] init];
+            [fmt24 setLocale:posix];
+            [fmt24 setDateFormat:@"HH:mm"];
+        });
         NSDate *estimatedEndTime = [NSDate dateWithTimeIntervalSinceNow:remainingSeconds];
-        NSDateFormatter *dateFormatter = [[NSDateFormatter alloc] init];
-        [dateFormatter setLocale:[[NSLocale alloc] initWithLocaleIdentifier:@"en_US_POSIX"]];
-        [dateFormatter setDateFormat:IS_ENABLED(Uses24HoursTime) ? @"HH:mm" : @"h:mm a"];
-        remainingTimeText = [dateFormatter stringFromDate:estimatedEndTime];
+        remainingTimeText = [IS_ENABLED(Uses24HoursTime) ? fmt24 : fmt12 stringFromDate:estimatedEndTime];
     }
     
     NSString *safeRemainingTimeText = remainingTimeText ?: @"";
@@ -864,8 +876,10 @@ static CGFloat remainingOverlayWidth(YTPlayerViewController *pvc, CGFloat fullWi
             else if (areaSetting == 7) areaPercent = 0.45;
             else if (areaSetting == 8) areaPercent = 0.50;
 
-            int leftAction = [[NSUserDefaults standardUserDefaults] objectForKey:LeftSideGesture] ? INTFORVAL(LeftSideGesture) : 1;
-            int rightAction = [[NSUserDefaults standardUserDefaults] objectForKey:RightSideGesture] ? INTFORVAL(RightSideGesture) : 2;
+            // Read from prefs cache — these are in the snapshot, not raw NSUserDefaults
+            NSDictionary *snap = YMPrefsSnapshot();
+            int leftAction  = snap[LeftSideGesture]  ? [snap[LeftSideGesture]  intValue] : 1;
+            int rightAction = snap[RightSideGesture] ? [snap[RightSideGesture] intValue] : 2;
 
             if (startLocation.x > activeWidth * areaPercent && startLocation.x < activeWidth * (1.0 - areaPercent)) return NO;
             if (startLocation.x <= activeWidth * areaPercent && leftAction == 0) return NO;
@@ -957,8 +971,9 @@ static CGFloat remainingOverlayWidth(YTPlayerViewController *pvc, CGFloat fullWi
             else if (areaSetting == 7) areaPercent = 0.45;
             else if (areaSetting == 8) areaPercent = 0.50;
 
-            int leftAction = [[NSUserDefaults standardUserDefaults] objectForKey:LeftSideGesture] ? INTFORVAL(LeftSideGesture) : 1;
-            int rightAction = [[NSUserDefaults standardUserDefaults] objectForKey:RightSideGesture] ? INTFORVAL(RightSideGesture) : 2;
+            NSDictionary *snap = YMPrefsSnapshot();
+            int leftAction  = snap[LeftSideGesture]  ? [snap[LeftSideGesture]  intValue] : 1;
+            int rightAction = snap[RightSideGesture] ? [snap[RightSideGesture] intValue] : 2;
 
             if (startLocation.x <= activeWidth * areaPercent) {
                 controlType = leftAction; 
@@ -975,7 +990,7 @@ static CGFloat remainingOverlayWidth(YTPlayerViewController *pvc, CGFloat fullWi
             else if (controlType == 3) initialSpeed = [ovcon currentPlaybackRate];
 
             if (IS_ENABLED(GestureHUD) && controlType != 0) {
-                int sizeSetting = [[NSUserDefaults standardUserDefaults] objectForKey:GestureHUDSize] ? (int)[[NSUserDefaults standardUserDefaults] integerForKey:GestureHUDSize] : 1;
+                int sizeSetting = snap[GestureHUDSize] ? [snap[GestureHUDSize] intValue] : 1;
                 CGFloat fontSize = 14.0 + (sizeSetting * 2.0);
                 CGFloat hudWidth = 74.0 + (sizeSetting * 10.0);
                 CGFloat hudHeight = 30.0 + (sizeSetting * 4.0);
@@ -984,7 +999,7 @@ static CGFloat remainingOverlayWidth(YTPlayerViewController *pvc, CGFloat fullWi
                 self.YouModGestureHUD.layer.cornerRadius = hudHeight / 2.0;
                 self.YouModGestureHUD.font = [UIFont boldSystemFontOfSize:fontSize];
 
-                int posSetting = [[NSUserDefaults standardUserDefaults] objectForKey:GestureHUDPosition] ? (int)[[NSUserDefaults standardUserDefaults] integerForKey:GestureHUDPosition] : 0;
+                int posSetting = snap[GestureHUDPosition] ? [snap[GestureHUDPosition] intValue] : 0;
                 CGFloat viewHeight = self.view.bounds.size.height;
                 CGFloat centerY = viewHeight / 6.0;
                 if (posSetting == 1) centerY = viewHeight / 2.0;
@@ -1387,7 +1402,10 @@ static CGFloat remainingOverlayWidth(YTPlayerViewController *pvc, CGFloat fullWi
     static BOOL initialLockState;
     static BOOL isPendingToggle;
 
+    // Use raw NSUserDefaults here only for the float/bool writes which must
+    // persist across sessions; all reads go through the prefs cache snapshot.
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSDictionary *snap = YMPrefsSnapshot();
 
     if (gesture.state == UIGestureRecognizerStateBegan) {
         if (self.playerState != 3) return;
@@ -1484,16 +1502,47 @@ static CGFloat remainingOverlayWidth(YTPlayerViewController *pvc, CGFloat fullWi
 }
 %end
 
-// Video buttons filtering
+// ─── YouModFilterVideoButtons ─────────────────────────────────────────────────
+// Called from _ASDisplayView -didMoveToWindow for video action-bar button
+// suppression. Hot path: fires once per button per video page load.
+//
+// Old code used [child description] (full protobuf serialisation) to match
+// nodes by their accessibility identifier. Now we ask for
+// accessibilityIdentifier directly and only fall back to description if the
+// node doesn't expose one — which in practice never happens for these nodes.
+//
+// Class pointers for the two VC types are cached to avoid repeated
+// objc_getClass() calls (which do a hash table lookup each time).
+// ─────────────────────────────────────────────────────────────────────────────
+static Class ymELMClass     = nil;
+static Class ymWatchNextClass = nil;
+static Class ymCollCellClass = nil;
+static dispatch_once_t ymFilterClassOnce;
+
+static inline NSString *ymNodeIdent(id node) {
+    if ([node respondsToSelector:@selector(accessibilityIdentifier)]) {
+        NSString *i = [node accessibilityIdentifier];
+        if (i && i.length) return i;
+    }
+    return [node description]; // fallback — should be rare
+}
+
 static void YouModFilterVideoButtons(_ASDisplayView *view, NSString *iden) {
+    dispatch_once(&ymFilterClassOnce, ^{
+        ymELMClass      = objc_getClass("YTELMViewController");
+        ymWatchNextClass = objc_getClass("YTWatchNextResultsViewController");
+        ymCollCellClass  = objc_getClass("_ASCollectionViewCell");
+    });
+
     UIViewController *con = view._viewControllerForAncestor;
-    if ([con isKindOfClass:%c(YTELMViewController)]) {
+    if ([con isKindOfClass:ymELMClass]) {
         _ASDisplayView *mainView = (_ASDisplayView *)view.superview;
         ASDisplayNode *node = mainView.keepalive_node;
         BOOL done = NO;
         for (ASDisplayNode *child in [node.yogaChildren copy]) {
             for (id child2 in [child.yogaChildren copy]) {
-                if ([[child2 description] containsString:iden]) {
+                // Use identifier first — avoids protobuf serialisation
+                if ([ymNodeIdent(child2) containsString:iden]) {
                     [node removeYogaChild:child];
                     [view removeFromSuperview];
                     done = YES;
@@ -1502,7 +1551,7 @@ static void YouModFilterVideoButtons(_ASDisplayView *view, NSString *iden) {
             }
             if (done) break;
         }
-    } else if ([con isKindOfClass:%c(YTWatchNextResultsViewController)]) {
+    } else if ([con isKindOfClass:ymWatchNextClass]) {
         BOOL isNewActionBar = NO;
         UIView *test = view.superview;
         while (test != nil) {
@@ -1522,7 +1571,7 @@ static void YouModFilterVideoButtons(_ASDisplayView *view, NSString *iden) {
                 ASDisplayNode *node = dpView.keepalive_node;
                 NSArray *children = [node.yogaChildren copy];
                 for (UIView *child in children) {
-                    if ([[child description] containsString:iden]) {
+                    if ([ymNodeIdent(child) containsString:iden]) {
                         [node removeYogaChild:child];
                         break;
                     }
@@ -1548,7 +1597,7 @@ static void YouModFilterVideoButtons(_ASDisplayView *view, NSString *iden) {
                 }
             } else {
                 UIView *actualMainView = view.superview;
-                while (actualMainView != nil && ![actualMainView isKindOfClass:%c(_ASCollectionViewCell)]) {
+                while (actualMainView != nil && ![actualMainView isKindOfClass:ymCollCellClass]) {
                     actualMainView = actualMainView.superview;
                 }
                 
@@ -1567,11 +1616,13 @@ static void YouModFilterVideoButtons(_ASDisplayView *view, NSString *iden) {
                 ASDisplayNode *node = dpView.keepalive_node;
                 NSArray *children = [node.yogaChildren copy];
                 for (UIView *child in children) {
-                    NSString *desc = [child description];
-                    if ([desc containsString:iden]) {
+                    // Use identifier-first match to avoid protobuf serialisation
+                    NSString *childId = ymNodeIdent(child);
+                    if ([childId containsString:iden]) {
                         [node removeYogaChild:child];
                         [view removeFromSuperview];
-                    } else if (![desc containsString:@"id.video.like.button"] && ![desc containsString:@"id.video.dislike.button"]) {
+                    } else if (![childId containsString:@"id.video.like.button"] &&
+                               ![childId containsString:@"id.video.dislike.button"]) {
                         [node removeYogaChild:child];
                     }
                 }
@@ -1604,8 +1655,28 @@ static void YouModFilterVideoButtons(_ASDisplayView *view, NSString *iden) {
 %hook _ASDisplayView
 - (void)didMoveToWindow {
     %orig;
+    if (!self.window) return;
+
     NSString *iden = self.accessibilityIdentifier;
     if (!iden || iden.length == 0) return;
+
+    // Quick bail: if none of the video-button features are enabled,
+    // skip all the remaining work. This is the common case for users
+    // who haven't toggled any of these options.
+    static BOOL ymAnyVideoFilterEnabled = NO;
+    static dispatch_once_t ymVFOnce;
+    // Re-check on prefs change by resetting the once token via notification.
+    // For now, check on every call but keep the check itself cheap (cache hit).
+    ymAnyVideoFilterEnabled = (IS_ENABLED(RemoveVideoShareButton)    ||
+                               IS_ENABLED(RemoveVideoSaveButton)     ||
+                               IS_ENABLED(RemoveVideoDownloadButton) ||
+                               IS_ENABLED(RemoveVideoClipButton)     ||
+                               IS_ENABLED(RemoveVideoRemixButton)    ||
+                               IS_ENABLED(RemoveVideoLikeButton)     ||
+                               IS_ENABLED(RemoveVideoDislikeButton)  ||
+                               IS_ENABLED(RemoveVideoLiveChatButton));
+    if (!ymAnyVideoFilterEnabled) return;
+
     BOOL shouldFilter = NO;
     if ([iden isEqualToString:@"id.video.share.button"] && IS_ENABLED(RemoveVideoShareButton)) {
         shouldFilter = YES;
