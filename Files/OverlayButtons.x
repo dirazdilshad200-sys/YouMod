@@ -26,6 +26,24 @@ static void didSelectRate(float rate) {
     [[NSNotificationCenter defaultCenter] postNotificationName:YouModUpdateSpeedLabel object:nil];
 }
 
+// ─── Cached class references ──────────────────────────────────────────────
+static Class cls_YTQTMButton;
+static Class cls_YTTypeStyle;
+static Class cls_YTAlertView;
+static Class cls_YTDefaultSheetController;
+static Class cls_YTActionSheetAction;
+
+static void ymOverlayInitClasses(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        cls_YTQTMButton              = cls_YTQTMButton;
+        cls_YTTypeStyle              = cls_YTTypeStyle;
+        cls_YTAlertView              = cls_YTAlertView;
+        cls_YTDefaultSheetController = cls_YTDefaultSheetController;
+        cls_YTActionSheetAction      = cls_YTActionSheetAction;
+    });
+}
+
 @interface YTMainAppControlsOverlayView ()
 - (void)updateQualityButton:(id)arg;
 - (void)updateSpeedButton:(id)arg;
@@ -48,7 +66,7 @@ static void showTranscript(YTFormat3CaptionViewController *cvc) {
         [SBSkipNotificationView showErrorInView:parent message:LOC(@"NO_CAPTIONS") duration:4.0];
         return;
     }
-    YTAlertView *alertView = [%c(YTAlertView) confirmationDialogWithAction:^{
+    YTAlertView *alertView = [cls_YTAlertView confirmationDialogWithAction:^{
         UIPasteboard *pasteboard = [UIPasteboard generalPasteboard];
         pasteboard.string = transcript;
         [SBSkipNotificationView showSuccessInView:parent message:LOC(@"COPIED_TO_CLIPBOARD") duration:3.0];
@@ -127,7 +145,9 @@ BOOL YMIsOverlayButtonEnabled(NSString *identifier) {
     if (!identifier || identifier.length == 0) return NO;
     if ([identifier isEqualToString:@"download.video"] && !IS_ENABLED(DownloadManager)) return NO;
     if ([identifier isEqualToString:@"sponsorblock.toggle"] && !IS_ENABLED(SBEnabled)) return NO;
-    NSArray *savedOrder = [[NSUserDefaults standardUserDefaults] arrayForKey:OverlayButtonOrder];
+    // Single prefs-cache read — avoids repeated NSUserDefaults IPC in a path
+    // called from layoutSubviews on every overlay render.
+    NSArray *savedOrder = YMPrefsSnapshot()[OverlayButtonOrder];
     if (savedOrder.count > 0) {
         for (NSDictionary *entry in savedOrder) {
             if ([entry[@"id"] isEqualToString:identifier]) {
@@ -160,7 +180,7 @@ NSArray<YMOverlayButtonSpec *> *YMOrderedOverlayButtons(void) {
         if (spec.identifier) lookup[spec.identifier] = spec;
     }
 
-    NSArray *savedOrder = [[NSUserDefaults standardUserDefaults] arrayForKey:OverlayButtonOrder];
+    NSArray *savedOrder = YMPrefsSnapshot()[OverlayButtonOrder];
     NSMutableArray<YMOverlayButtonSpec *> *ordered = [NSMutableArray array];
 
     if (savedOrder.count > 0) {
@@ -210,7 +230,7 @@ static YTPlayerViewController *YMPlayerVCFromOverlay(YTMainAppControlsOverlayVie
 // them; recursion reaches the nested buttons wherever they sit.
 static void YMScanForGearFrame(UIView *view, YTMainAppControlsOverlayView *overlay, CGFloat topRegionMaxY, CGRect *bestFrame) {
     for (UIView *sub in view.subviews) {
-        if ([sub isKindOfClass:%c(YTQTMButton)]) {
+        if ([sub isKindOfClass:cls_YTQTMButton]) {
             CGRect f = [sub convertRect:sub.bounds toView:overlay];
             if (CGRectGetMidY(f) <= topRegionMaxY) { // in the top button row
                 // The CGRectIsNull check must stay first: CGRectGetMidX(CGRectNull) is
@@ -242,13 +262,25 @@ static CGRect YMGearFrameInOverlay(YTMainAppControlsOverlayView *overlay) {
 // with a plain system-font fallback on versions lacking the YouTube Sans style API.
 static UIFont *YMOverlayTextButtonFont(NSString *text, CGSize maxSize) {
     if (text.length == 0) return [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
-    
-    YTDefaultTypeStyle *typeStyle = [%c(YTTypeStyle) defaultTypeStyle];
+
+    // Cache per (text, maxSize) — fit-loop calls boundingRectWithSize: up to N times
+    // per label on every layout pass. Labels like "1x"/"4K" never change; cache makes
+    // subsequent calls a single dict lookup instead of a full measurement loop.
+    static NSMutableDictionary *fontCache;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ fontCache = [NSMutableDictionary dictionary]; });
+    NSString *cacheKey = [NSString stringWithFormat:@"%@_%.0f_%.0f", text, maxSize.width, maxSize.height];
+    UIFont *cached = fontCache[cacheKey];
+    if (cached) return cached;
+
+    YTDefaultTypeStyle *typeStyle = [cls_YTTypeStyle defaultTypeStyle];
     BOOL hasYTFont = [typeStyle respondsToSelector:@selector(ytSansFontOfSize:weight:)];
     NSInteger bestSize = 10;
 
     for (NSInteger size = (NSInteger)maxSize.height; size >= 8; size--) {
-        UIFont *testFont = hasYTFont ? [typeStyle ytSansFontOfSize:(CGFloat)size weight:UIFontWeightSemibold] : [UIFont systemFontOfSize:(CGFloat)size weight:UIFontWeightSemibold];
+        UIFont *testFont = hasYTFont
+            ? [typeStyle ytSansFontOfSize:(CGFloat)size weight:UIFontWeightSemibold]
+            : [UIFont systemFontOfSize:(CGFloat)size weight:UIFontWeightSemibold];
         CGRect rect = [text boundingRectWithSize:CGSizeMake(maxSize.width, CGFLOAT_MAX)
                                          options:NSStringDrawingUsesLineFragmentOrigin
                                       attributes:@{NSFontAttributeName: testFont}
@@ -257,8 +289,12 @@ static UIFont *YMOverlayTextButtonFont(NSString *text, CGSize maxSize) {
             bestSize = size;
             break;
         }
-    } 
-    return hasYTFont ? [typeStyle ytSansFontOfSize:(CGFloat)bestSize weight:UIFontWeightSemibold] : [UIFont systemFontOfSize:(CGFloat)bestSize weight:UIFontWeightSemibold];
+    }
+    UIFont *result = hasYTFont
+        ? [typeStyle ytSansFontOfSize:(CGFloat)bestSize weight:UIFontWeightSemibold]
+        : [UIFont systemFontOfSize:(CGFloat)bestSize weight:UIFontWeightSemibold];
+    fontCache[cacheKey] = result;
+    return result;
 }
 
 static YTQTMButton *YMCreateOverlayButton(YTMainAppControlsOverlayView *overlay, YMOverlayButtonSpec *spec) {
@@ -269,7 +305,7 @@ static YTQTMButton *YMCreateOverlayButton(YTMainAppControlsOverlayView *overlay,
         // Text button: a label instead of an icon. customTitleColor is YTQTMButton's
         // own text-colour channel; sizeWithPaddingAndInsets is disabled so the width
         // stays fixed rather than expanding to fit the text.
-        button = [%c(YTQTMButton) textButton];
+        button = [cls_YTQTMButton textButton];
         [button setTitle:spec.title forState:UIControlStateNormal];
         button.customTitleColor = tint;
         button.titleLabel.font = YMOverlayTextButtonFont(spec.title, CGSizeMake(25, 25));
@@ -287,7 +323,7 @@ static YTQTMButton *YMCreateOverlayButton(YTMainAppControlsOverlayView *overlay,
         UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:20 weight:UIImageSymbolWeightMedium];
         // Template rendering so YTQTMButton's tint colours the glyph reliably.
         UIImage *icon = [[UIImage systemImageNamed:spec.symbolName withConfiguration:config] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-        button = [%c(YTQTMButton) iconButton];
+        button = [cls_YTQTMButton iconButton];
         [button setImage:icon forState:UIControlStateNormal];
         button.tintColor = tint;
         button.imageView.contentMode = UIViewContentModeScaleAspectFit;
@@ -490,14 +526,14 @@ static void YouModShowShareNotification(NSString *message, BOOL success) {
     NSString *timestampURL = [NSString stringWithFormat:@"%@&t=%lds", videoURL, (long)seconds];
 
     UIViewController *presenter = (UIViewController *)[self activeVideoPlayerOverlay];
-    YTDefaultSheetController *sheet = [%c(YTDefaultSheetController) sheetControllerWithParentResponder:presenter];
+    YTDefaultSheetController *sheet = [cls_YTDefaultSheetController sheetControllerWithParentResponder:presenter];
 
-    YTActionSheetAction *copyURL = [%c(YTActionSheetAction) actionWithTitle:LOC(@"COPY_URL") iconImage:YouModYTIconImage(250, NO, nil) style:0 handler:^(__unused YTActionSheetAction *action) {
+    YTActionSheetAction *copyURL = [cls_YTActionSheetAction actionWithTitle:LOC(@"COPY_URL") iconImage:YouModYTIconImage(250, NO, nil) style:0 handler:^(__unused YTActionSheetAction *action) {
         UIPasteboard.generalPasteboard.string = videoURL;
         YouModShowShareNotification(LOC(@"URL_COPIED"), YES);
     }];
 
-    YTActionSheetAction *copyTimestamp = [%c(YTActionSheetAction) actionWithTitle:LOC(@"COPY_URL_TIMESTAMP") iconImage:YouModYTIconImage(250, NO, nil) style:0 handler:^(__unused YTActionSheetAction *action) {
+    YTActionSheetAction *copyTimestamp = [cls_YTActionSheetAction actionWithTitle:LOC(@"COPY_URL_TIMESTAMP") iconImage:YouModYTIconImage(250, NO, nil) style:0 handler:^(__unused YTActionSheetAction *action) {
         UIPasteboard.generalPasteboard.string = timestampURL;
         YouModShowShareNotification(LOC(@"URL_TIMESTAMP_COPIED"), YES);
     }];
@@ -538,8 +574,21 @@ static void YouModShowShareNotification(NSString *message, BOOL success) {
 %end
 
 static NSString *getCompactQualityLabel(MLFormat *format) {
-    NSString *qualityLabel = [format qualityLabel];
+    NSString *rawLabel = [format qualityLabel];
+    if (!rawLabel) return @"Auto";
+
+    // Cache: same quality string always maps to the same compact label.
+    // Avoids repeated stringByReplacingOccurrencesOfString: allocations on every
+    // quality-button update (fires on format switches and feed preloads).
+    static NSMutableDictionary *labelCache;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ labelCache = [NSMutableDictionary dictionary]; });
+    NSString *cached = labelCache[rawLabel];
+    if (cached) return cached;
+
+    NSString *qualityLabel = rawLabel;
     BOOL shouldShowFPS = [format FPS] > 30;
+
     if ([qualityLabel hasPrefix:@"2160p"])
         qualityLabel = [qualityLabel stringByReplacingOccurrencesOfString:@"2160p" withString:@"4K"];
     else if ([qualityLabel hasPrefix:@"1440p"])
@@ -552,6 +601,8 @@ static NSString *getCompactQualityLabel(MLFormat *format) {
         qualityLabel = [qualityLabel stringByReplacingOccurrencesOfString:@"p" withString:@""];
     if ([qualityLabel hasSuffix:@" HDR"])
         qualityLabel = [qualityLabel stringByReplacingOccurrencesOfString:@" HDR" withString:@"\nHDR"];
+
+    labelCache[rawLabel] = qualityLabel;
     return qualityLabel;
 }
 
@@ -576,6 +627,7 @@ static NSString *getCompactQualityLabel(MLFormat *format) {
 %end
 
 %ctor {
+    ymOverlayInitClasses();
     YMOverlayButtonSpec *mute = [[YMOverlayButtonSpec alloc] init];
     mute.identifier = @"mute.video";
     mute.symbolName = IS_ENABLED(KeepMutedKey) ? @"speaker.slash" : @"speaker.wave.2";
