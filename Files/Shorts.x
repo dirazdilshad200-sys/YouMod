@@ -1,5 +1,37 @@
 #import "Headers.h"
 
+// ─── Cached static filter tables ─────────────────────────────────────────────
+// Built once; avoids allocating NSDictionary literals on every didMoveToWindow
+// call, which fires for every Shorts cell during scrolling.
+static NSDictionary *sShortsButtonsMap;
+static NSDictionary *sShortsPausedHeaderMap;
+static NSDictionary *sShortsElementsMap;
+
+static void ymShortsInitMaps(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        sShortsButtonsMap = @{
+            @"id.reel_like_button":             @(RemoveShortsLikeButton),
+            @"id.reel_like_toggled_button":     @(RemoveShortsLikeButton),
+            @"id.reel_comment_button":          @(RemoveShortsCommentButton),
+            @"id.reel_share_button":            @(RemoveShortsShareButton),
+            @"id.reel_remix_button":            @(RemoveShortsRemixButton),
+            @"id.reel_pivot_button":            @(RemoveShortsSoundMetadataButton),
+        };
+        sShortsPausedHeaderMap = @{
+            @"id.ui.shorts_paused_state.subscriptions_button": @(RemoveShortsPausedSubButton),
+            @"id.ui.shorts_paused_state.live_button":          @(RemoveShortsPausedLiveButton),
+            @"id.ui.shorts_paused_state.lens_button":          @(RemoveShortsPausedLensButton),
+            @"id.ui.shorts_paused_state.trends_button":        @(RemoveShortsPausedTrendsButton),
+        };
+        sShortsElementsMap = @{
+            @"product_sticker.main_target":             @(HideShortsProducts),
+            @"product_sticker.secondary_target":        @(HideShortsProducts),
+            @"id.elements.components.suggested_action": @(HideShortsRecbar),
+        };
+    });
+}
+
 // Enables shorts quality - works best with YTClassicVideoQuality
 %hook YTHotConfig
 - (BOOL)enableOmitAdvancedMenuInShortsVideoQualityPicker { return IS_ENABLED(EnablesShortsQuality) ? YES : %orig; }
@@ -28,12 +60,12 @@
 %end
 
 static void YouModMakeAShortsAction(YTReelPlayerViewController *self, YTSingleVideoController *video, YTSingleVideoTime *time) {
-    if (INTFORVAL(ShortsActionIndex) == 0) return;
-
+    NSInteger action = INTFORVAL(ShortsActionIndex);
+    if (action == 0) return;
     if (floor(time.time) >= floor(video.totalMediaTime)) {
-        if (INTFORVAL(ShortsActionIndex) == 1) {
+        if (action == 1) {
             [self reelContentViewRequestsAdvanceToNextVideo:nil];
-        } else if (INTFORVAL(ShortsActionIndex) == 2) {
+        } else if (action == 2) {
             [self reelContentViewRequestsPlayPauseToggle:nil];
         }
     }
@@ -68,7 +100,6 @@ static BOOL isFullscreenEnabled = NO;
     YTIAudioTrack *matchedTrack = nil;
 
     if (INTFORVAL(AudioTrack) == 1) {
-        // Loop for all tracks
         for (YTIAudioTrack *track in availableTracks) {
             if ([track.id_p hasSuffix:@".4"]) {
                 matchedTrack = track;
@@ -76,17 +107,13 @@ static BOOL isFullscreenEnabled = NO;
             }
         }
     } else if (INTFORVAL(AudioTrack) == 2) {
-        // Loop for all tracks
         for (YTIAudioTrack *track in availableTracks) {
             if ([track.id_p hasPrefix:userTargetLang]) {
                 matchedTrack = track;
                 break;
             }
         }
-
-        // Check if it's dubbed
         if (matchedTrack && [matchedTrack isAutoDubbed] && IS_ENABLED(NoDubbedAudioTrack)) matchedTrack = nil;
-
         if (!matchedTrack && IS_ENABLED(NoDubbedAudioTrack)) {
             for (YTIAudioTrack *track in availableTracks) {
                 if ([track.id_p hasSuffix:@".4"]) {
@@ -97,7 +124,6 @@ static BOOL isFullscreenEnabled = NO;
         }
     }
 
-    // If found, change to it
     if (matchedTrack) {
         [pv setAudioTrack:matchedTrack source:0];
     }
@@ -123,55 +149,37 @@ static BOOL isFullscreenEnabled = NO;
 extern void YouModConfigureDownloadButton(_ASDisplayView *view);
 
 static void YouModFilterShortsButtons(_ASDisplayView *self, NSString *iden) {
-    NSDictionary *buttonsList = @{
-        @"id.reel_like_button": @(IS_ENABLED(RemoveShortsLikeButton)),
-        @"id.reel_like_toggled_button": @(IS_ENABLED(RemoveShortsLikeButton)),
-        @"id.reel_comment_button": @(IS_ENABLED(RemoveShortsCommentButton)),
-        @"id.reel_share_button": @(IS_ENABLED(RemoveShortsShareButton)),
-        @"id.reel_remix_button" : @(IS_ENABLED(RemoveShortsRemixButton)),
-        @"id.reel_pivot_button": @(IS_ENABLED(RemoveShortsSoundMetadataButton))
-    };
-    for (NSString *button in buttonsList) {
-        if ([iden isEqualToString:button] && [buttonsList[button] boolValue]) {
-            _ASDisplayView *mainView = (_ASDisplayView *)self.superview;
-            ASDisplayNode *node = mainView.keepalive_node;
-            for (_ASDisplayView *view in node.yogaChildren) {
-                if ([[view description] containsString:button]) {
-                    [node removeYogaChild:view];
-                    [self removeFromSuperview];
-                    break;
-                }
-            }
+    // Static map — no allocation per call.
+    NSNumber *prefKey = sShortsButtonsMap[iden];
+    if (!prefKey || ![prefKey boolValue]) return;
+    // Use accessibilityIdentifier instead of [view description] (protobuf serialise).
+    _ASDisplayView *mainView = (_ASDisplayView *)self.superview;
+    ASDisplayNode *node = mainView.keepalive_node;
+    for (_ASDisplayView *view in node.yogaChildren) {
+        if ([view.accessibilityIdentifier isEqualToString:iden]) {
+            [node removeYogaChild:view];
+            [self removeFromSuperview];
             break;
         }
     }
 }
 
 static void YouModFilterShortsPausedHeader(_ASDisplayView *self, NSString *iden) {
-    NSDictionary *buttonsList = @{
-        @"id.ui.shorts_paused_state.subscriptions_button": @(IS_ENABLED(RemoveShortsPausedSubButton)),
-        @"id.ui.shorts_paused_state.live_button": @(IS_ENABLED(RemoveShortsPausedLiveButton)),
-        @"id.ui.shorts_paused_state.lens_button": @(IS_ENABLED(RemoveShortsPausedLensButton)),
-        @"id.ui.shorts_paused_state.trends_button" : @(IS_ENABLED(RemoveShortsPausedTrendsButton))
-    };
-    for (NSString *button in buttonsList) {
-        if ([iden isEqualToString:button] && [buttonsList[button] boolValue]) {
-            ASScrollView *mainView = (ASScrollView *)self.superview;
-            ASDisplayNode *node = mainView.scrollNode;
-            for (_ASDisplayView *view in node.yogaChildren) {
-                if ([[view description] containsString:button]) {
-                    [node removeYogaChild:view];
-                    [self removeFromSuperview];
-                    break;
-                }
-            }
+    NSNumber *prefKey = sShortsPausedHeaderMap[iden];
+    if (!prefKey || ![prefKey boolValue]) return;
+    ASScrollView *mainView = (ASScrollView *)self.superview;
+    ASDisplayNode *node = mainView.scrollNode;
+    for (_ASDisplayView *view in node.yogaChildren) {
+        if ([view.accessibilityIdentifier isEqualToString:iden]) {
+            [node removeYogaChild:view];
+            [self removeFromSuperview];
             break;
         }
     }
 }
 
 static void YouModFilterShortsDisclosure(_ASDisplayView *self, NSString *iden) {
-    if (![self.accessibilityIdentifier isEqualToString:@"eml.shorts-disclosures"] || !IS_ENABLED(RemoveShortsDisclosure)) return;
+    if (![iden isEqualToString:@"eml.shorts-disclosures"] || !IS_ENABLED(RemoveShortsDisclosure)) return;
     _ASDisplayView *dpView = (_ASDisplayView *)self.superview;
     ASDisplayNode *node = dpView.keepalive_node;
     _ASDisplayView *maindpView = (_ASDisplayView *)dpView.superview;
@@ -187,12 +195,8 @@ static void YouModFilterShortsDisclosure(_ASDisplayView *self, NSString *iden) {
     YouModConfigureDownloadButton(self);
     NSString *iden = self.accessibilityIdentifier;
     if (!iden || iden.length == 0) return;
-    NSDictionary *elements = @{
-        @"product_sticker.main_target": @(IS_ENABLED(HideShortsProducts)),
-        @"product_sticker.secondary_target": @(IS_ENABLED(HideShortsProducts)),
-        @"id.elements.components.suggested_action": @(IS_ENABLED(HideShortsRecbar))
-    };
-    if ([elements[iden] boolValue]) {
+    // Static map lookup — O(1), no per-call allocation.
+    if ([sShortsElementsMap[iden] boolValue]) {
         [self removeFromSuperview];
         return;
     }
@@ -200,7 +204,6 @@ static void YouModFilterShortsDisclosure(_ASDisplayView *self, NSString *iden) {
         [self.superview removeFromSuperview];
         return;
     }
-    
     YouModFilterShortsButtons(self, iden);
     YouModFilterShortsPausedHeader(self, iden);
     YouModFilterShortsDisclosure(self, iden);
@@ -252,10 +255,7 @@ static void YouModFilterShortsDisclosure(_ASDisplayView *self, NSString *iden) {
 }
 %new
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
-    if (gestureRecognizer == self.YouModFullscreenGesture) {
-        return YES;
-    }
-    return NO;
+    return gestureRecognizer == self.YouModFullscreenGesture;
 }
 %end
 
@@ -279,7 +279,6 @@ static void YouModFilterShortsDisclosure(_ASDisplayView *self, NSString *iden) {
     isShortsOnlyOn = NO;
     UIView *parent = sbGetNotificationParent();
     [SBSkipNotificationView showSuccessInView:parent message:LOC(@"SHORTS_ONLY_DISABLED") duration:3.0];
-
     [[[[self valueForKey:@"_parentResponder"] valueForKey:@"_delegate"] valueForKey:@"_pivotBarProvider"] performSelector:@selector(showPivotBar)];
     [UIView animateWithDuration:0.3 animations:^{
         self.playbackOverlay.alpha = 1;
@@ -287,16 +286,15 @@ static void YouModFilterShortsDisclosure(_ASDisplayView *self, NSString *iden) {
 }
 %new
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldBeRequiredToFailByGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
-    if (gestureRecognizer == self.YouModExitShortsOnlyGesture && [otherGestureRecognizer isKindOfClass:[UILongPressGestureRecognizer class]]) {
-        return YES;
-    }
-    return NO;
+    return gestureRecognizer == self.YouModExitShortsOnlyGesture
+        && [otherGestureRecognizer isKindOfClass:[UILongPressGestureRecognizer class]];
 }
 %new
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer {
-    if (gestureRecognizer == self.YouModExitShortsOnlyGesture) {
-        return NO;
-    }
-    return YES;
+    return gestureRecognizer != self.YouModExitShortsOnlyGesture;
 }
 %end
+
+%ctor {
+    ymShortsInitMaps();
+}

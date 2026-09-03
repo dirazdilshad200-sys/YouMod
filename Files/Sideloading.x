@@ -1,24 +1,34 @@
 // All Codes are adapt from YTLite and uYouEnhanced + Some of my research
 #import "Headers.h"
 
-// AccessGroupID
-static NSString *accessGroupID() {
-    NSDictionary *query = [NSDictionary dictionaryWithObjectsAndKeys:
-                           (__bridge NSString *)kSecClassGenericPassword, (__bridge NSString *)kSecClass,
-                           @"bundleSeedID", kSecAttrAccount,
-                           @"", kSecAttrService,
-                           (id)kCFBooleanTrue, kSecReturnAttributes,
-                           nil];
-    CFDictionaryRef result = nil;
-    OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, (CFTypeRef *)&result);
-    if (status == errSecItemNotFound) {
-        status = SecItemAdd((__bridge CFDictionaryRef)query, (CFTypeRef *)&result);
-        if (status != errSecSuccess) {
-            return nil;
+// ─── Cached class references ──────────────────────────────────────────────────
+static Class cls_YTUIUtils;
+
+// AccessGroupID — result cached after first Keychain lookup.
+// SecItemCopyMatching / SecItemAdd are IPC calls into securityd; running them
+// on every keychain operation was expensive. The access group never changes at
+// runtime so a single dispatch_once result is correct.
+static NSString *accessGroupID(void) {
+    static NSString *cachedGroup;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSDictionary *query = @{
+            (__bridge NSString *)kSecClass:            (__bridge NSString *)kSecClassGenericPassword,
+            (__bridge NSString *)kSecAttrAccount:      @"bundleSeedID",
+            (__bridge NSString *)kSecAttrService:      @"",
+            (__bridge NSString *)kSecReturnAttributes: @YES,
+        };
+        CFDictionaryRef result = nil;
+        OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, (CFTypeRef *)&result);
+        if (status == errSecItemNotFound) {
+            status = SecItemAdd((__bridge CFDictionaryRef)query, (CFTypeRef *)&result);
         }
-    }
-    NSString *accessGroup = [(__bridge NSDictionary *)result objectForKey:(__bridge NSString *)kSecAttrAccessGroup];
-    return accessGroup;
+        if (status == errSecSuccess && result) {
+            cachedGroup = [(__bridge NSDictionary *)result objectForKey:(__bridge NSString *)kSecAttrAccessGroup];
+            CFRelease(result);
+        }
+    });
+    return cachedGroup;
 }
 
 // IAmYouTube (https://github.com/PoomSmart/IAmYouTube)
@@ -102,7 +112,7 @@ static NSString *accessGroupID() {
 }
 %end
 
-// AccessGroupID
+// AccessGroupID — all keychain helpers use the cached version.
 %hook SSOKeychainHelper
 + (id)accessGroup { return accessGroupID(); }
 + (id)sharedAccessGroup { return accessGroupID(); }
@@ -168,7 +178,7 @@ static NSString *accessGroupID() {
 %hook UIApplication
 - (BOOL)openURL:(NSURL *)url {
     if (url && ([url.scheme isEqualToString:@"youtube"] || [url.scheme isEqualToString:@"vnd.youtube"])) {
-        NSString *host = url.host; // e.g. "watch", "shorts", the video ID itself
+        NSString *host = url.host;
         NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
         NSString *videoID = nil;
         NSString *playlistID = nil;
@@ -176,13 +186,12 @@ static NSString *accessGroupID() {
             if ([item.name isEqualToString:@"v"]) videoID = item.value;
             if ([item.name isEqualToString:@"list"]) playlistID = item.value;
         }
-        // youtube://<videoID> — bare ID in host position
         if (!videoID && host.length == 11) videoID = host;
         if (videoID.length > 0) {
             NSString *watchURL = playlistID
                 ? [NSString stringWithFormat:@"https://www.youtube.com/watch?v=%@&list=%@", videoID, playlistID]
                 : [NSString stringWithFormat:@"https://www.youtube.com/watch?v=%@", videoID];
-            [%c(YTUIUtils) openURL:[NSURL URLWithString:watchURL]];
+            [cls_YTUIUtils openURL:[NSURL URLWithString:watchURL]];
             return YES;
         }
     }
@@ -203,7 +212,7 @@ static NSString *accessGroupID() {
             NSString *watchURL = playlistID
                 ? [NSString stringWithFormat:@"https://www.youtube.com/watch?v=%@&list=%@", videoID, playlistID]
                 : [NSString stringWithFormat:@"https://www.youtube.com/watch?v=%@", videoID];
-            [%c(YTUIUtils) openURL:[NSURL URLWithString:watchURL]];
+            [cls_YTUIUtils openURL:[NSURL URLWithString:watchURL]];
             if (completion) completion(YES);
             return;
         }
@@ -223,3 +232,10 @@ static NSString *accessGroupID() {
     return %orig;
 }
 %end
+
+%ctor {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        cls_YTUIUtils = %c(YTUIUtils);
+    });
+}
