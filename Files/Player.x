@@ -376,29 +376,58 @@ static void YouModAddEndTime(YTPlayerViewController *self, YTSingleVideoControll
 %end
 
 // Remove Watermarks
+// Disassembly of 21.35.3 shows three separate watermark code paths:
+//   1. YTAnnotationsViewController — handles featured channel watermark image
+//   2. YTMainAppVideoPlayerOverlayView — _watermarkEnabled ivar controls visibility
+//   3. GVROverlayView — _hidesWatermark ivar, used in the standard player
+//   4. YTAdBaseVideoPlayerOverlayView / YTEditBaseVideoPlayerOverlayView
+//      — updateCollapsedWatermarkViewVisibility shows the collapsed watermark
+// All four must be suppressed; hooking only one or two leaves the others active.
+
 %hook YTAnnotationsViewController
-- (void)loadFeaturedChannelWatermark { 
-    if (IS_ENABLED(HideWaterMark)) {
-        [self setValue:nil forKey:@"_watermarkView"];
-        return;
-    }
+- (void)loadFeaturedChannelWatermark {
+    if (IS_ENABLED(HideWaterMark)) return; // skip watermark setup entirely
     %orig;
 }
-- (void)setWatermarkImage:(id)arg1 height:(NSUInteger)arg2 { 
-    if (IS_ENABLED(HideWaterMark)) return; // don't call %orig — YouTube re-creates the watermark internally regardless of nil args
+- (void)setWatermarkImage:(id)arg1 height:(NSUInteger)arg2 {
+    if (IS_ENABLED(HideWaterMark)) return; // don't call %orig — YouTube recreates the view inside %orig
     %orig(arg1, arg2);
+}
+- (void)updateWatermarkVisibility {
+    // updateWatermarkVisibility runs on every player state change and can
+    // un-hide the watermark. When hiding is enabled we skip it entirely.
+    if (IS_ENABLED(HideWaterMark)) return;
+    %orig;
 }
 - (void)viewDidLayoutSubviews {
     %orig;
-    // Belt-and-suspenders: hide the watermark view if it snuck through any code path
     if (IS_ENABLED(HideWaterMark)) {
+        // Catch any watermark view that survived the hooks above
         UIView *wmView = [self valueForKey:@"_watermarkView"];
-        if (wmView) {
-            wmView.hidden = YES;
-            wmView.alpha = 0.0;
-        }
+        wmView.hidden = YES;
+        wmView.alpha = 0.0;
     }
 }
+%end
+
+// GVROverlayView owns the watermark in the standard (non-360) player.
+// Its _hidesWatermark ivar gates all watermark visibility updates.
+%hook GVROverlayView
+- (BOOL)hidesWatermark { return IS_ENABLED(HideWaterMark) ? YES : %orig; }
+- (void)setHidesWatermark:(BOOL)arg1 {
+    %orig(IS_ENABLED(HideWaterMark) ? YES : arg1);
+}
+%end
+
+// YTAdBaseVideoPlayerOverlayView and YTEditBaseVideoPlayerOverlayView both
+// implement updateCollapsedWatermarkViewVisibility, which shows the watermark
+// in a collapsed/minimised player state. We blank it out instead of showing.
+%hook YTAdBaseVideoPlayerOverlayView
+- (void)updateCollapsedWatermarkViewVisibility { /* suppressed */ }
+%end
+
+%hook YTEditBaseVideoPlayerOverlayView
+- (void)updateCollapsedWatermarkViewVisibility { /* suppressed */ }
 %end
 
 %hook YTInlineMutedPlaybackScrubberViewController
@@ -595,11 +624,12 @@ static CGFloat YouModSpeedForHoldIndex(NSInteger index) {
     BOOL temp = IS_ENABLED(RemoveDarkOverlay) ? NO : arg1;
     %orig(temp, arg2);
 }
-// Hide Watermarks
+// Watermark — isWatermarkEnabled ivar is the gate YouTube checks before showing.
+// setWatermarkEnabled: is called by the player on every video load.
+// Both must return NO/be suppressed for the setting to stick.
 - (BOOL)isWatermarkEnabled { return IS_ENABLED(HideWaterMark) ? NO : %orig; }
-- (void)setWatermarkEnabled:(BOOL)arg { 
-    BOOL temp = IS_ENABLED(HideWaterMark) ? NO : arg;
-    %orig(temp);
+- (void)setWatermarkEnabled:(BOOL)arg {
+    %orig(IS_ENABLED(HideWaterMark) ? NO : arg);
 }
 - (void)layoutSubviews {
     %orig;

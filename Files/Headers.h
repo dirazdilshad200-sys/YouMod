@@ -488,6 +488,13 @@ typedef NS_ENUM(NSUInteger, GestureSection) {
 @interface YTAnnotationsViewController : UIViewController
 @end
 
+// Both implement updateCollapsedWatermarkViewVisibility (confirmed via disassembly of 21.35.3)
+@interface YTAdBaseVideoPlayerOverlayView : UIView
+@end
+
+@interface YTEditBaseVideoPlayerOverlayView : UIView
+@end
+
 @interface YTRelatedVideosView : UIView
 @end
 
