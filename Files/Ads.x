@@ -479,6 +479,153 @@ static NSMutableArray <YTIItemSectionRenderer *> *filteredArray(NSArray <YTIItem
 - (void)showSurveyWithRenderer:(id)arg1 surveyParentResponder:(id)arg2 {}
 %end
 
+// ─── Ad Pipeline (binary-confirmed hooks from 21.35.3) ───────────────────────
+// These target the orchestration layer — one level above the renderer filtering
+// above. They disarm the event wiring that arms ad breaks, pings, and promos
+// before any content is even requested.
+
+// Ad control flow / scheduling
+%hook YTAdsControlFlowManager
+- (void)addEventHandlers {}
+%end
+
+%hook YTAdBreakService
+- (id)createAds { return nil; }
+%end
+
+%hook YTAdsPlaybackCoordinator
+- (void)addEventHandlers {}
+%end
+
+%hook YTAdLoggingAPI
+- (void)addEventHandlers {}
+%end
+
+// Tracking pings (impression, quartile, completion, click, skip beacons)
+%hook YTAdsPingService
+- (void)addEventHandlers {}
+%end
+
+%hook YTAdsEventLoggingController
+- (void)addEventHandlers {}
+%end
+
+%hook YTVideoAdsService
+- (void)addEventHandlers {}
+%end
+
+%hook YTAdTrackingController
+- (void)addEventHandlers {}
+%end
+
+// Shorts / Reels ad infrastructure
+%hook YTShortsAdsContentPresenter
+- (void)addEventHandlers {}
+%end
+
+%hook YTReelAdsPresenterManager
+- (void)addEventHandlers {}
+%end
+
+%hook YTAdsOrganicReelLifecycleObserver
+- (void)addEventHandlers {}
+%end
+
+// Frequency cap API — deny insertion and kill IPC round-trips
+%hook YTAdsFcapAPI
+- (void)addEventHandlers {}
+- (BOOL)canInsertAd:(id)ad fcapThreshold:(NSInteger)threshold { return NO; }
+%end
+
+// ─── Promo / Upsell System ────────────────────────────────────────────────────
+%hook YTMealbarPromoController
+- (void)addEventHandlers {}
+- (void)displayMealbarAfterAd {}
+%end
+
+%hook YTPlaybackUpsellController
+- (void)addEventHandlers {}
+%end
+
+%hook YTUpsellAlertController
+- (void)addEventHandlers {}
+%end
+
+%hook YTWatchNextUpsellController
+- (void)addEventHandlers {}
+%end
+
+%hook YTPlayerPromoController
+- (void)addEventHandlers {}
+%end
+
+%hook YTPromosheetController
+- (void)addEventHandlers {}
+%end
+
+// Full-screen promo overlay — viewDidAppear so the VC still inits cleanly
+%hook YTInterstitialPromoViewController
+- (void)viewDidAppear:(BOOL)animated {}
+%end
+
+%hook YTShowPromoCommandHandler
+- (void)handleCommand:(id)command {}
+%end
+
+// ─── Extended Survey Blocking ─────────────────────────────────────────────────
+// YTSurveyController already hooked above; these cover the concrete impl,
+// the underlying service, server command handler, and UI entry points.
+%hook YTSSurveyController
+- (void)addEventHandlers {}
+%end
+
+%hook YTSurveyService
+- (void)addEventHandlers {}
+%end
+
+%hook YTSurveyEndpointCommandHandler
+- (void)handleCommand:(id)command {}
+%end
+
+%hook YTInlineSurveyCell
+- (void)addSurveyView {}
+%end
+
+%hook YTReelWatchSurveyViewController
+- (void)viewDidAppear:(BOOL)animated {}
+%end
+
+%hook YTSubmitReelsAdSurveyCommandHandler
+- (void)handleCommand:(id)command {}
+%end
+
+// ─── Interstitial / Impression Commands ──────────────────────────────────────
+%hook YTShowInterstitialCommandHandler
+- (void)handleCommand:(id)command {}
+%end
+
+// Impression-capped commands trigger upsell/promo after N video views
+%hook YTImpressionCappedCommandHandler
+- (void)handleCommand:(id)command {}
+%end
+
+// ─── Ad Signal / Device Tracking Infrastructure ───────────────────────────────
+%hook YTWebViewAdSignalsController
+- (void)addEventHandlers {}
+- (id)collectSignals { return nil; }
+%end
+
+// Server-triggered device fingerprint / IDFA collection
+%hook YTCollectMobileDeviceSignalsCommandHandler
+- (void)handleCommand:(id)command {}
+%end
+
+// ATT permission prompt + IDFA provisioning for ad targeting
+%hook YTAppTrackingProvisioner
+- (void)addEventHandlers {}
+- (void)provisionTracking {}
+%end
+
 // ─── Class cache initialisation ───────────────────────────────────────────────
 %ctor {
     initCachedClasses();
