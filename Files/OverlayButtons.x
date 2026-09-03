@@ -8,10 +8,14 @@ static NSString *YouModUpdateNotification = @"YouModUpdateNotification";
 static NSString *currentQualityLabel = @"Auto";
 
 static NSString *speedLabel(float rate) {
-    NSNumberFormatter *formatter = [[NSNumberFormatter alloc] init];
-    formatter.numberStyle = NSNumberFormatterDecimalStyle;
-    formatter.minimumFractionDigits = 0;
-    formatter.maximumFractionDigits = 2;
+    static NSNumberFormatter *formatter = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        formatter = [[NSNumberFormatter alloc] init];
+        formatter.numberStyle = NSNumberFormatterDecimalStyle;
+        formatter.minimumFractionDigits = 0;
+        formatter.maximumFractionDigits = 2;
+    });
     NSString *rateString = [formatter stringFromNumber:[NSNumber numberWithFloat:rate]];
     return [NSString stringWithFormat:@"%@x", rateString];
 }
@@ -81,6 +85,17 @@ static const CGFloat YMOverlayTextButtonWidth = 30.0;
 static NSMutableArray<YMOverlayButtonSpec *> *gOverlayButtons = nil;
 static NSInteger gOverlayButtonNextTag = YMOverlayButtonBaseTag;
 
+// Cached results for YMOrderedOverlayButtons / YMRegisteredOverlayButtons.
+// Reading NSUserDefaults + sorting on every layoutSubviews causes measurable lag,
+// especially during fullscreen transitions. Invalidate via YouModInvalidateOverlayButtonCache.
+static NSArray<YMOverlayButtonSpec *> *gCachedOrderedButtons = nil;
+static NSArray<YMOverlayButtonSpec *> *gCachedRegisteredButtons = nil;
+
+static void YMInvalidateOverlayButtonCache(void) {
+    gCachedOrderedButtons = nil;
+    gCachedRegisteredButtons = nil;
+}
+
 void YMRegisterOverlayButton(YMOverlayButtonSpec *spec) {
     if (!spec || spec.identifier.length == 0) return;
     static dispatch_once_t once;
@@ -95,14 +110,17 @@ void YMRegisterOverlayButton(YMOverlayButtonSpec *spec) {
     }
     if (spec.viewTag == 0) spec.viewTag = gOverlayButtonNextTag++;
     [gOverlayButtons addObject:spec];
+    YMInvalidateOverlayButtonCache();
 }
 
 NSArray<YMOverlayButtonSpec *> *YMRegisteredOverlayButtons(void) {
     if (!gOverlayButtons) return @[];
-    return [gOverlayButtons sortedArrayUsingComparator:^NSComparisonResult(YMOverlayButtonSpec *a, YMOverlayButtonSpec *b) {
+    if (gCachedRegisteredButtons) return gCachedRegisteredButtons;
+    gCachedRegisteredButtons = [gOverlayButtons sortedArrayUsingComparator:^NSComparisonResult(YMOverlayButtonSpec *a, YMOverlayButtonSpec *b) {
         if (a.sortOrder == b.sortOrder) return [a.identifier compare:b.identifier];
         return a.sortOrder < b.sortOrder ? NSOrderedAscending : NSOrderedDescending;
     }];
+    return gCachedRegisteredButtons;
 }
 
 BOOL YMIsOverlayButtonEnabled(NSString *identifier) {
@@ -132,6 +150,10 @@ BOOL YMIsOverlayButtonEnabled(NSString *identifier) {
 
 NSArray<YMOverlayButtonSpec *> *YMOrderedOverlayButtons(void) {
     if (!gOverlayButtons || gOverlayButtons.count == 0) return @[];
+    // Return cached result — this function is called from layoutSubviews on every frame
+    // and reads NSUserDefaults + sorts arrays, which is expensive. The cache is invalidated
+    // whenever settings change via YouModInvalidateOverlayButtonCache().
+    if (gCachedOrderedButtons) return gCachedOrderedButtons;
 
     NSMutableDictionary<NSString *, YMOverlayButtonSpec *> *lookup = [NSMutableDictionary dictionary];
     for (YMOverlayButtonSpec *spec in gOverlayButtons) {
@@ -170,7 +192,8 @@ NSArray<YMOverlayButtonSpec *> *YMOrderedOverlayButtons(void) {
         }
     }
 
-    return ordered;
+    gCachedOrderedButtons = [ordered copy];
+    return gCachedOrderedButtons;
 }
 
 #pragma mark - Helpers
@@ -368,6 +391,7 @@ static BOOL isRelatedVideosExpanded = NO;
 
 %new
 - (void)ymUpdateOverlayButtons:(id)arg {
+    YMInvalidateOverlayButtonCache();
     [self setNeedsLayout];
 }
 

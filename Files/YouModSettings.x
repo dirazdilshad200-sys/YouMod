@@ -779,6 +779,9 @@ static const void *kYMCachedDisplayedItemsKey = &kYMCachedDisplayedItemsKey;
     NSString *key = objc_getAssociatedObject(sender, kYMSwitchKeyAssoc);
     if (key) {
         [[NSUserDefaults standardUserDefaults] setBool:sender.on forKey:key];
+        // Invalidate the in-memory prefs snapshot so IS_ENABLED picks up the change
+        YMReloadPrefsCache();
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"YouModPrefsDidChange" object:nil];
         [self updateDisplayedItemsAnimated:YES];
     }
 }
@@ -848,6 +851,7 @@ static const void *kYMCachedDisplayedItemsKey = &kYMCachedDisplayedItemsKey;
     float snapped = roundf(sender.value / step) * step;
     sender.value = snapped;
     [[NSUserDefaults standardUserDefaults] setFloat:snapped forKey:key];
+    YMReloadPrefsCache();
     UILabel *valueLabel = objc_getAssociatedObject(sender, kYMSliderLabelAssoc);
     NSDateComponentsFormatter *formatter = [[NSDateComponentsFormatter alloc] init];
     formatter.allowedUnits = NSCalendarUnitSecond;
@@ -956,6 +960,7 @@ static const void *kYMCachedDisplayedItemsKey = &kYMCachedDisplayedItemsKey;
     NSString *key = objc_getAssociatedObject(sender, kYMSwitchKeyAssoc);
     if (key) {
         [[NSUserDefaults standardUserDefaults] setInteger:sender.selectedSegmentIndex forKey:key];
+        YMReloadPrefsCache();
         [self updateDisplayedItemsAnimated:YES];
     }
 }

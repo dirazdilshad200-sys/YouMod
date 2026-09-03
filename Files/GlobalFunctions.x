@@ -85,6 +85,30 @@ UIViewController *YouModTopViewController(UIViewController *root) {
     return root;
 }
 
+// ─── Preferences cache ────────────────────────────────────────────────────────
+// Replaces per-call NSUserDefaults IPC with a single in-memory snapshot.
+// Rebuilt on launch and whenever the settings UI posts YouModPrefsDidChange.
+
+static NSDictionary *gYMPrefsSnapshot = nil;
+static dispatch_once_t gYMPrefsOnce;
+
+NSDictionary *YMPrefsSnapshot(void) {
+    dispatch_once(&gYMPrefsOnce, ^{ YMReloadPrefsCache(); });
+    return gYMPrefsSnapshot ?: @{};
+}
+
+void YMReloadPrefsCache(void) {
+    // Grab the whole persistent domain for this app in one IPC round-trip.
+    NSString *domain = [[NSBundle mainBundle] bundleIdentifier] ?: @"com.google.ios.youtube";
+    NSDictionary *fresh = [[NSUserDefaults standardUserDefaults] persistentDomainForName:domain];
+    // Merge with standardUserDefaults registered defaults so IS_ENABLED works
+    // for keys that were never explicitly written (i.e., their default is NO/0).
+    NSMutableDictionary *merged = [NSMutableDictionary dictionaryWithDictionary:
+                                   [[NSUserDefaults standardUserDefaults] dictionaryRepresentation]];
+    if (fresh) [merged addEntriesFromDictionary:fresh];
+    gYMPrefsSnapshot = [merged copy];
+}
+
 // OLEDKeyboard (https://github.com/dayanch96/OledKeyboard)
 BOOL isDarkMode(UIView *view) {
     if ([view respondsToSelector:@selector(_mapkit_isDarkModeEnabled)]) {

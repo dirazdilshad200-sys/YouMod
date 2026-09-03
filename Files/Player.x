@@ -385,12 +385,19 @@ static void YouModAddEndTime(YTPlayerViewController *self, YTSingleVideoControll
     %orig;
 }
 - (void)setWatermarkImage:(id)arg1 height:(NSUInteger)arg2 { 
-    if (IS_ENABLED(HideWaterMark)) {
-        arg1 = nil;
-        arg2 = 0;
-        [self setValue:nil forKey:@"_watermarkView"];
-    }
+    if (IS_ENABLED(HideWaterMark)) return; // don't call %orig — YouTube re-creates the watermark internally regardless of nil args
     %orig(arg1, arg2);
+}
+- (void)viewDidLayoutSubviews {
+    %orig;
+    // Belt-and-suspenders: hide the watermark view if it snuck through any code path
+    if (IS_ENABLED(HideWaterMark)) {
+        UIView *wmView = [self valueForKey:@"_watermarkView"];
+        if (wmView) {
+            wmView.hidden = YES;
+            wmView.alpha = 0.0;
+        }
+    }
 }
 %end
 
@@ -469,9 +476,31 @@ static void YouModAddEndTime(YTPlayerViewController *self, YTSingleVideoControll
 - (void)showConfirmAlert { IS_ENABLED(HideContentWarning) ? [self confirmAlertDidPressConfirm] : %orig; }
 %end
 
-// Portrait Fullscreen
+// Portrait Fullscreen + rotation-stuck fix
 %hook YTWatchViewController
 - (NSUInteger)allowedFullScreenOrientations { return IS_ENABLED(PortFull) ? UIInterfaceOrientationMaskAllButUpsideDown : %orig; }
+
+// When entering fullscreen the player VC gets the supported-orientations query.
+// When *exiting*, the parent VCs need to be told to re-query; without this the
+// interface stays locked in whatever orientation fullscreen left it in.
+- (void)setFullscreen:(BOOL)fullscreen animated:(BOOL)animated {
+    %orig;
+    if (!fullscreen) {
+        // Give UIKit a tick to finish the VC transition, then force a
+        // supported-orientations re-evaluation on the root controller.
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (@available(iOS 16, *)) {
+                UIWindowScene *scene = (UIWindowScene *)UIApplication.sharedApplication.connectedScenes.anyObject;
+                [scene.keyWindow.rootViewController setNeedsUpdateOfSupportedInterfaceOrientations];
+            } else {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+                [UIViewController attemptRotationToDeviceOrientation];
+#pragma clang diagnostic pop
+            }
+        });
+    }
+}
 %end
 
 %group ForceMiniPlayer

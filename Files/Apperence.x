@@ -26,17 +26,27 @@
 %hook _ASDisplayView
 - (void)didMoveToWindow {
     %orig;
-    NSSet *blackViews = [NSSet setWithObjects:
-        @"id.elements.components.comment_composer",
-        @"id.subs.subscriptions_channel_bar",
-        @"PAmedia_hub_device_picker.engagement_panel_header", nil
-    ];  
-    if ([blackViews containsObject:self.accessibilityIdentifier]) {
+    // _viewControllerForAncestor walks the entire VC hierarchy, and
+    // [renderer description] serializes a protobuf to a string — both are
+    // expensive. Skip entirely when this window is nil (view detaching) or
+    // when OLED mode is off and none of the identifier fast-paths match.
+    if (!self.window) return;
+    NSString *myIdent = self.accessibilityIdentifier;
+    static NSSet *blackViews = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        blackViews = [NSSet setWithObjects:
+            @"id.elements.components.comment_composer",
+            @"id.subs.subscriptions_channel_bar",
+            @"PAmedia_hub_device_picker.engagement_panel_header", nil
+        ];
+    });
+    if ([blackViews containsObject:myIdent]) {
         self.backgroundColor = [UIColor colorWithDynamicProvider:^UIColor * _Nonnull(UITraitCollection * _Nonnull traitCollection) {
             return isDarkMode(self) ? [UIColor blackColor] : [UIColor clearColor];
         }];
         return;
-    }     
+    }
     UIViewController *controller = self._viewControllerForAncestor;
     if ([controller isKindOfClass:%c(YTActionSheetDialogViewController)] || [controller isKindOfClass:%c(YTBottomSheetController)]) {
         if ([self.superview.accessibilityIdentifier isEqualToString:@"eml.animated_subscribe_button"]) return;
@@ -116,6 +126,7 @@
 %hook ASScrollView
 - (void)didMoveToWindow {
     %orig;
+    if (!self.window) return; // skip the expensive walk when detaching
     ASDisplayNode *node = self.scrollNode;
     if (node) {
         for (UIView *child in node.yogaChildren) {

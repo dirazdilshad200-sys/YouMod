@@ -87,8 +87,24 @@
 #define DownloadMethodServer 1   // external server (triggerSilentDownload…)
 #define DownloadMethodOnDevice 2 // on-device SABR engine
 
-#define IS_ENABLED(k) [[NSUserDefaults standardUserDefaults] boolForKey:k]
-#define INTFORVAL(v) [[NSUserDefaults standardUserDefaults] integerForKey:v]
+// ─── Preferences cache ────────────────────────────────────────────────────────
+// NSUserDefaults.boolForKey / integerForKey are CFPreferences IPC calls under
+// the hood. On sideloaded apps cfprefsd can't use shared memory, so every call
+// is a synchronous round-trip. With 100+ IS_ENABLED checks firing on every
+// scroll cell, layout pass, and animation frame this adds up to serious jank.
+//
+// Solution: read the entire defaults dict into a static NSDictionary once at
+// startup (and again whenever the user changes a setting), then answer lookups
+// from pure in-memory dictionary access — zero IPC, zero disk.
+//
+// The notification "YouModPrefsDidChange" is posted by the settings UI after
+// any toggle/slider/segment change so the cache stays consistent.
+// ─────────────────────────────────────────────────────────────────────────────
+extern NSDictionary *YMPrefsSnapshot(void);
+extern void YMReloadPrefsCache(void);
+
+#define IS_ENABLED(k)  ([YMPrefsSnapshot()[k] boolValue])
+#define INTFORVAL(v)   ([YMPrefsSnapshot()[v] integerValue])
 #define FixPlaybackIssues @"YouModFixPlaybackIssues"
 #define MuteButton @"YouModMuteButton"
 #define SpeedButton @"YouModSpeedButton"

@@ -159,6 +159,59 @@ static NSString *accessGroupID() {
 - (id)keychainAccessGroup { return accessGroupID(); }
 %end
 
+// Fix "Open in YouTube" routing to App Store instead of this app.
+// When YouTube builds a youtube:// or vnd.youtube:// URL for "open in YouTube app",
+// iOS looks for another installed app that handles that scheme. Since YouMod spoofs
+// the bundle ID, the system finds the real YouTube on the App Store instead.
+// We intercept those URLs, extract the video/playlist ID, and open the watch screen
+// in-process via YTUIUtils rather than handing off to iOS at all.
+%hook UIApplication
+- (BOOL)openURL:(NSURL *)url {
+    if (url && ([url.scheme isEqualToString:@"youtube"] || [url.scheme isEqualToString:@"vnd.youtube"])) {
+        NSString *host = url.host; // e.g. "watch", "shorts", the video ID itself
+        NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
+        NSString *videoID = nil;
+        NSString *playlistID = nil;
+        for (NSURLQueryItem *item in components.queryItems) {
+            if ([item.name isEqualToString:@"v"]) videoID = item.value;
+            if ([item.name isEqualToString:@"list"]) playlistID = item.value;
+        }
+        // youtube://<videoID> — bare ID in host position
+        if (!videoID && host.length == 11) videoID = host;
+        if (videoID.length > 0) {
+            NSString *watchURL = playlistID
+                ? [NSString stringWithFormat:@"https://www.youtube.com/watch?v=%@&list=%@", videoID, playlistID]
+                : [NSString stringWithFormat:@"https://www.youtube.com/watch?v=%@", videoID];
+            [%c(YTUIUtils) openURL:[NSURL URLWithString:watchURL]];
+            return YES;
+        }
+    }
+    return %orig(url);
+}
+- (void)openURL:(NSURL *)url options:(NSDictionary<UIApplicationOpenExternalURLOptionsKey, id> *)options completionHandler:(void (^)(BOOL))completion {
+    if (url && ([url.scheme isEqualToString:@"youtube"] || [url.scheme isEqualToString:@"vnd.youtube"])) {
+        NSString *host = url.host;
+        NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
+        NSString *videoID = nil;
+        NSString *playlistID = nil;
+        for (NSURLQueryItem *item in components.queryItems) {
+            if ([item.name isEqualToString:@"v"]) videoID = item.value;
+            if ([item.name isEqualToString:@"list"]) playlistID = item.value;
+        }
+        if (!videoID && host.length == 11) videoID = host;
+        if (videoID.length > 0) {
+            NSString *watchURL = playlistID
+                ? [NSString stringWithFormat:@"https://www.youtube.com/watch?v=%@&list=%@", videoID, playlistID]
+                : [NSString stringWithFormat:@"https://www.youtube.com/watch?v=%@", videoID];
+            [%c(YTUIUtils) openURL:[NSURL URLWithString:watchURL]];
+            if (completion) completion(YES);
+            return;
+        }
+    }
+    %orig(url, options, completion);
+}
+%end
+
 // Fixes crash/data saving
 %hook NSFileManager
 - (NSURL *)containerURLForSecurityApplicationGroupIdentifier:(NSString *)groupIdentifier {
